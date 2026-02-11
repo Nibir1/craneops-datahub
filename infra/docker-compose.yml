@@ -1,18 +1,27 @@
 services:
   # -------------------------------------------------------
-  # 1. AZURITE (Simulates Azure Data Lake Storage Gen2)
+  # 1. AZURITE (Azure Data Lake Storage Gen2 Emulator)
   # -------------------------------------------------------
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.29.0
     container_name: craneops-azurite
     hostname: azurite
-    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000"
+    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data"
     ports:
       - "10000:10000"
+    volumes:
+      - azurite-data:/data
     restart: always
+    networks:
+      - craneops-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10000/devstoreaccount1?comp=list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # -------------------------------------------------------
-  # 2. SQL SERVER 2022 (Serving Layer) with Custom Init
+  # 2. SQL SERVER 2022 (Serving Layer)
   # -------------------------------------------------------
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
@@ -29,6 +38,7 @@ services:
     volumes:
       - ./init-sql:/docker-entrypoint-initdb.d:ro
       - ./init-sql/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+      - sql-data:/var/opt/mssql
     entrypoint: ["/usr/local/bin/entrypoint.sh"]
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P ${MSSQL_SA_PASSWORD} -C -Q 'SELECT 1' || exit 1"]
@@ -36,52 +46,93 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+    networks:
+      - craneops-network
 
   # -------------------------------------------------------
-  # 3. SPARK MASTER (Processing Coordinator)
+  # 3. SPARK MASTER (Production Build with Azure JARs)
   # -------------------------------------------------------
   spark-master:
-    image: spark:3.5.7-scala2.12-java11-ubuntu
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: craneops/spark-azure:3.5.7-v1
     container_name: craneops-spark-master
     hostname: spark-master
     environment:
       - SPARK_MODE=master
       - SPARK_MASTER_PORT=7077
       - SPARK_MASTER_WEBUI_PORT=8080
+      - SPARK_EXTRA_CLASSPATH=/opt/spark/jars/azure/*
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2G
+    volumes:
+      - spark-logs:/opt/spark/logs
+      - ../src/processing/src:/opt/spark/work-dir:ro
+      - azurite-data:/data:rw  # Read-write access to Azurite data
     ports:
       - "${SPARK_WEBUI_PORT}:8080"
       - "${SPARK_MASTER_PORT}:7077"
-    entrypoint: ["/bin/bash", "-c"]
+    entrypoint: ["/opt/spark/bin/spark-class"]
     command: >
-      "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master 
-      --host 0.0.0.0 
-      --port 7077 
-      --webui-port 8080"
+      org.apache.spark.deploy.master.Master
+      --host 0.0.0.0
+      --port 7077
+      --webui-port 8080
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 5s
       retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      azurite:
+        condition: service_healthy
+    networks:
+      - craneops-network
 
   # -------------------------------------------------------
-  # 4. SPARK WORKER (Processing Node)
+  # 4. SPARK WORKER (Production Build)
   # -------------------------------------------------------
   spark-worker:
-    image: spark:3.5.7-scala2.12-java11-ubuntu
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: craneops/spark-azure:3.5.7-v1
     container_name: craneops-spark-worker
     environment:
       - SPARK_MODE=worker
-      - SPARK_WORKER_CORES=1
-      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2G
       - SPARK_WORKER_PORT=8888
       - SPARK_WORKER_WEBUI_PORT=8081
+      - SPARK_EXTRA_CLASSPATH=/opt/spark/jars/azure/*
     depends_on:
       spark-master:
         condition: service_healthy
     ports:
       - "8081:8081"
-    entrypoint: ["/bin/bash", "-c"]
+    volumes:
+      - spark-logs:/opt/spark/logs
+      - azurite-data:/data:rw  # Read-write access to Azurite data
+    entrypoint: ["/opt/spark/bin/spark-class"]
     command: >
-      "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker 
-      spark://spark-master:7077 
-      --webui-port 8081"
+      org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077
+      --webui-port 8081
+    restart: unless-stopped
+    networks:
+      - craneops-network
+
+volumes:
+  spark-logs:
+    driver: local
+  azurite-data:
+    driver: local
+  sql-data:
+    driver: local
+
+networks:
+  craneops-network:
+    driver: bridge
