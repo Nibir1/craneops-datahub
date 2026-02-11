@@ -1,0 +1,87 @@
+services:
+  # -------------------------------------------------------
+  # 1. AZURITE (Simulates Azure Data Lake Storage Gen2)
+  # -------------------------------------------------------
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.29.0
+    container_name: craneops-azurite
+    hostname: azurite
+    command: "azurite-blob --blobHost 0.0.0.0 --blobPort 10000"
+    ports:
+      - "10000:10000"
+    restart: always
+
+  # -------------------------------------------------------
+  # 2. SQL SERVER 2022 (Serving Layer) with Custom Init
+  # -------------------------------------------------------
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: craneops-sqlserver
+    hostname: sqlserver
+    user: root
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD}"
+      MSSQL_PID: "${MSSQL_PID}"
+      MSSQL_DB: "${MSSQL_DB}"
+    ports:
+      - "${MSSQL_PORT}:1433"
+    volumes:
+      - ./init-sql:/docker-entrypoint-initdb.d:ro
+      - ./init-sql/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P ${MSSQL_SA_PASSWORD} -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # -------------------------------------------------------
+  # 3. SPARK MASTER (Processing Coordinator)
+  # -------------------------------------------------------
+  spark-master:
+    image: spark:3.5.7-scala2.12-java11-ubuntu
+    container_name: craneops-spark-master
+    hostname: spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    ports:
+      - "${SPARK_WEBUI_PORT}:8080"
+      - "${SPARK_MASTER_PORT}:7077"
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master 
+      --host 0.0.0.0 
+      --port 7077 
+      --webui-port 8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # -------------------------------------------------------
+  # 4. SPARK WORKER (Processing Node)
+  # -------------------------------------------------------
+  spark-worker:
+    image: spark:3.5.7-scala2.12-java11-ubuntu
+    container_name: craneops-spark-worker
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_WORKER_CORES=1
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_PORT=8888
+      - SPARK_WORKER_WEBUI_PORT=8081
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker 
+      spark://spark-master:7077 
+      --webui-port 8081"
