@@ -43,17 +43,23 @@ class IngestionServiceTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
 
-        // Configure ObjectMapper to handle Java 8 date/time
+        // 1. Setup Jackson for Java Time (Instant)
         objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
         objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-        // Mock the Azure SDK hierarchy
+        // 2. Setup Azure SDK Mocks
+        // When service asks for a container, give the mock container
         when(blobServiceClient.getBlobContainerClient(anyString())).thenReturn(containerClient);
+
+        // When service checks if container exists, say YES (to skip create() call)
         when(containerClient.exists()).thenReturn(true);
+
+        // When service asks for a blob client (file), give the mock blob client
         when(containerClient.getBlobClient(anyString())).thenReturn(blobClient);
 
-        // Initialize service
+        // 3. Initialize Service using the TEST CONSTRUCTOR
+        // This bypasses the Managed Identity/Connection String logic entirely
         ingestionService = new IngestionService(blobServiceClient, "telemetry-raw", objectMapper);
     }
 
@@ -69,7 +75,7 @@ class IngestionServiceTest {
         // Act & Assert
         assertDoesNotThrow(() -> ingestionService.processEvent(event));
 
-        // Verify that upload was called
+        // Verify that upload was called on the mock blob client
         verify(blobClient, times(1)).upload(any(InputStream.class), anyLong(), eq(true));
 
         // Verify path generation (Hive Style: 2024/01/01/...)

@@ -175,8 +175,8 @@ infra-destroy: ## Destroy Azure Resources (Save Money)
 # CLOUD CONFIGURATION (From Terraform Outputs)
 # ==========================================
 # ⚠️  REPLACE THESE WITH YOUR ACTUAL VALUES
-ACR_NAME=acrcraneopsaf7sok
-ACR_LOGIN_SERVER=acrcraneopsaf7sok.azurecr.io
+ACR_NAME=acrcraneopseinda8
+ACR_LOGIN_SERVER=acrcraneopseinda8.azurecr.io
 
 # Image Tags
 TAG_INGEST=$(ACR_LOGIN_SERVER)/craneops-ingestion:latest

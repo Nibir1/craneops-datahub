@@ -100,3 +100,88 @@ resource "azurerm_container_app_environment" "env" {
   resource_group_name        = azurerm_resource_group.rg.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.log.id
 }
+
+# ==========================================
+# 7. Managed Identity & Roles
+# ==========================================
+resource "azurerm_user_assigned_identity" "ingest_identity" {
+  location            = azurerm_resource_group.rg.location
+  name                = "id-${var.project_name}-ingest"
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+resource "azurerm_role_assignment" "blob_contributor" {
+  scope                = azurerm_storage_account.adls.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_user_assigned_identity.ingest_identity.principal_id
+}
+
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.ingest_identity.principal_id
+}
+
+# --- NEW: PROPAGATION DELAY ---
+# Forces Terraform to wait 60s for RBAC to replicate
+resource "time_sleep" "wait_for_rbac" {
+  create_duration = "60s"
+  depends_on = [
+    azurerm_role_assignment.acr_pull,
+    azurerm_role_assignment.blob_contributor
+  ]
+}
+
+# ==========================================
+# 8. Azure Container App (Ingestion Service)
+# ==========================================
+resource "azurerm_container_app" "ingestion" {
+  name                         = "ca-${var.project_name}-ingest"
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.rg.name
+  revision_mode                = "Single"
+
+  # Explicitly depend on the timer, not just the role
+  depends_on = [time_sleep.wait_for_rbac]
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ingest_identity.id]
+  }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = azurerm_user_assigned_identity.ingest_identity.id
+  }
+
+  template {
+    container {
+      name   = "ingestion-service"
+      image  = "${azurerm_container_registry.acr.login_server}/craneops-ingestion:latest"
+      cpu    = 0.5
+      memory = "1Gi"
+
+      env {
+        name  = "AZURE_STORAGE_ACCOUNT_NAME"
+        value = azurerm_storage_account.adls.name
+      }
+      env {
+        name  = "AZURE_IDENTITY_ENABLED"
+        value = "true" 
+      }
+      env {
+        name  = "SERVER_PORT"
+        value = "8082"
+      }
+    }
+  }
+
+  ingress {
+    external_enabled = true 
+    target_port      = 8082
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
+  }
+}

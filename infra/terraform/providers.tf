@@ -8,6 +8,11 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6.0"
     }
+    # ADD THIS PROVIDER
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.10.0"
+    }
   }
 }
 
@@ -17,5 +22,6 @@ provider "azurerm" {
       prevent_deletion_if_contains_resources = false
     }
   }
-  # We leave subscription_id empty here and rely on 'az login'
 }
+
+provider "time" {}

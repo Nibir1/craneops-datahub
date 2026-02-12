@@ -27,3 +27,7 @@ output "sql_server_fqdn" {
 output "sql_db_name" {
   value = azurerm_mssql_database.sqldb.name
 }
+
+output "ingestion_app_url" {
+  value = azurerm_container_app.ingestion.latest_revision_fqdn
+}

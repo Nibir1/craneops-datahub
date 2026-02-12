@@ -1,8 +1,10 @@
 package com.craneops.ingestion.service;
 
+import com.azure.identity.DefaultAzureCredentialBuilder;
+import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
-import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.BlobServiceClientBuilder;
 import com.craneops.ingestion.dto.TelemetryEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -21,32 +23,67 @@ public class IngestionService {
 
     private final BlobContainerClient containerClient;
     private final ObjectMapper objectMapper;
-    
-    // Formatter for partitioning data: year/month/day
+
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd")
             .withZone(ZoneId.of("UTC"));
 
-    public IngestionService(BlobServiceClient blobServiceClient, 
-                            @Value("${spring.cloud.azure.storage.blob.container-name}") String containerName,
-                            ObjectMapper objectMapper) {
+    // --------------------------------------------------------------------------------
+    // CONSTRUCTOR 1: Spring Boot (Production)
+    // Handles the "Connection String vs Managed Identity" decision
+    // --------------------------------------------------------------------------------
+    public IngestionService(
+            @Value("${spring.cloud.azure.storage.blob.connection-string:}") String connectionString,
+            @Value("${spring.cloud.azure.storage.blob.container-name}") String containerName,
+            @Value("${AZURE_STORAGE_ACCOUNT_NAME:}") String accountName,
+            ObjectMapper objectMapper) {
+
+        // Delegate to the helper to create the client, then pass to the main logic
+        // constructor
+        this(createClient(connectionString, accountName), containerName, objectMapper);
+    }
+
+    // --------------------------------------------------------------------------------
+    // CONSTRUCTOR 2: Testing (Unit Tests)
+    // Allows injecting a Mock BlobServiceClient directly
+    // --------------------------------------------------------------------------------
+    public IngestionService(BlobServiceClient blobServiceClient, String containerName, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        
-        // Initialize container client and ensure container exists (Lazy Initialization)
         this.containerClient = blobServiceClient.getBlobContainerClient(containerName);
+
+        // Ensure container exists (Idempotent)
         if (!containerClient.exists()) {
             log.info("Container {} does not exist. Creating...", containerName);
             containerClient.create();
         }
     }
 
+    // Helper to determine which authentication method to use
+    private static BlobServiceClient createClient(String connectionString, String accountName) {
+        if (connectionString != null && !connectionString.isEmpty()) {
+            log.info("🔌 Using Connection String for Blob Storage");
+            return new BlobServiceClientBuilder()
+                    .connectionString(connectionString)
+                    .buildClient();
+        } else if (accountName != null && !accountName.isEmpty()) {
+            log.info("☁️ Using Managed Identity for Blob Storage");
+            String endpoint = String.format("https://%s.blob.core.windows.net", accountName);
+            return new BlobServiceClientBuilder()
+                    .endpoint(endpoint)
+                    .credential(new DefaultAzureCredentialBuilder().build())
+                    .buildClient();
+        } else {
+            throw new IllegalStateException("Misconfiguration: Neither Connection String nor Account Name provided.");
+        }
+    }
+
+    // --------------------------------------------------------------------------------
+    // Business Logic
+    // --------------------------------------------------------------------------------
     public void processEvent(TelemetryEvent event) {
         try {
-            // 1. Serialize payload to JSON
             String jsonPayload = objectMapper.writeValueAsString(event);
             byte[] data = jsonPayload.getBytes(StandardCharsets.UTF_8);
 
-            // 2. Generate Partitioned File Path (Hive Style: year/month/day/filename)
-            // Example: 2024/02/20/CRANE01-1708453221-uuid.json
             String datePath = DATE_FORMATTER.format(event.getTimestamp());
             String fileName = String.format("%s/%s-%s-%s.json",
                     datePath,
@@ -54,7 +91,6 @@ public class IngestionService {
                     event.getTimestamp().toEpochMilli(),
                     UUID.randomUUID().toString().substring(0, 8));
 
-            // 3. Upload to Blob Storage
             BlobClient blobClient = containerClient.getBlobClient(fileName);
             blobClient.upload(new ByteArrayInputStream(data), data.length, true);
 
