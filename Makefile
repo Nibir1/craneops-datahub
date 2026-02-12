@@ -209,6 +209,49 @@ cloud-push: cloud-build ## Push images to Azure Container Registry
 	@echo "✅ Images deployed to $(ACR_LOGIN_SERVER)"
 
 
+# ==========================================
+# CLOUD DATABASE (Azure SQL)
+# ==========================================
+
+# Variables required for Cloud SQL
+CLOUD_SQL_HOST=$(shell cd infra/terraform && terraform output -raw sql_server_fqdn)
+CLOUD_SQL_USER=craneadmin
+# We reuse the same password from .env used in Terraform
+CLOUD_SQL_PASS=$(MSSQL_SA_PASSWORD)
+
+db-init-cloud: ## Run Schema Init on Azure SQL
+	@echo "🚀 Initializing Cloud Database Schema at $(CLOUD_SQL_HOST)..."
+	@echo "   (This uses the local SQL Server container to connect to Azure)"
+	docker exec craneops-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+		-S $(CLOUD_SQL_HOST) \
+		-U $(CLOUD_SQL_USER) \
+		-P '$(CLOUD_SQL_PASS)' \
+		-d CraneData \
+		-C \
+		-i /tmp/sql/cloud_init.sql \
+		|| echo "⚠️  Failed? Ensure 'make up' is running so we can use the local container client."
+
+sql-query-cloud: ## Query DailyStats on Azure SQL
+	@echo "☁️  Querying Azure SQL Database..."
+	docker exec craneops-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+		-S $(CLOUD_SQL_HOST) \
+		-U $(CLOUD_SQL_USER) \
+		-P '$(CLOUD_SQL_PASS)' \
+		-d CraneData \
+		-C \
+		-Q "SELECT TOP 10 * FROM DailyStats;" \
+		-y 30 -Y 30
+
+sql-check-cloud: ## Connectivity Check
+	@echo "🔌 Checking connection to Azure SQL..."
+	docker exec craneops-sqlserver /opt/mssql-tools18/bin/sqlcmd \
+		-S $(CLOUD_SQL_HOST) \
+		-U $(CLOUD_SQL_USER) \
+		-P '$(CLOUD_SQL_PASS)' \
+		-d CraneData \
+		-C \
+		-Q "SELECT @@VERSION as SQLVersion;"
+
 # ==============================================================================
 # TESTING & QUALITY ASSURANCE
 # ==============================================================================
