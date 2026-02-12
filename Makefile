@@ -152,6 +152,41 @@ sql-count: ## Count records in DailyStats
 	docker exec craneops-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '$(MSSQL_SA_PASSWORD)' -d CraneData -C -Q "SELECT COUNT(*) as TotalRecords FROM DailyStats;"
 
 # ==============================================================================
+# TESTING & QUALITY ASSURANCE
+# ==============================================================================
+
+venv-setup: ## Create Python venv and install dependencies
+	cd src/processing && \
+	python3.11 -m venv .venv && \
+	source .venv/bin/activate && \
+	pip install --upgrade pip && \
+	pip install -e . && \
+	pip install pytest && \
+	echo "✅ Python virtual environment ready"
+
+venv-test: ## Run Python tests in venv
+	cd src/processing && \
+	source .venv/bin/activate && \
+	pytest tests/
+
+test-java: ## Run Java unit tests (Maven)
+	@echo "☕ Running Java tests..."
+	cd src/ingestion && mvn test
+
+test-python: venv-setup ## Setup venv and run Python tests
+	@echo "🐍 Running Python tests..."
+	cd src/processing && \
+	source .venv/bin/activate && \
+	pytest tests/
+
+test-all: test-python test-java ## Run all tests (Python + Java)
+	@echo "✅ All tests completed successfully!"
+
+ci-test: ## CI/CD test command (no venv setup, assumes ready)
+	cd src/processing && source .venv/bin/activate && pytest tests/
+	cd src/ingestion && mvn test
+
+# ==============================================================================
 # MAINTENANCE
 # ==============================================================================
 
