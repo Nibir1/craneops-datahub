@@ -171,6 +171,44 @@ infra-destroy: ## Destroy Azure Resources (Save Money)
 	@echo "🔥 Azure Infrastructure Destroyed."
 
 
+# ==========================================
+# CLOUD CONFIGURATION (From Terraform Outputs)
+# ==========================================
+# ⚠️  REPLACE THESE WITH YOUR ACTUAL VALUES
+ACR_NAME=acrcraneopsaf7sok
+ACR_LOGIN_SERVER=acrcraneopsaf7sok.azurecr.io
+
+# Image Tags
+TAG_INGEST=$(ACR_LOGIN_SERVER)/craneops-ingestion:latest
+TAG_SPARK=$(ACR_LOGIN_SERVER)/craneops-spark:latest
+
+
+# ==========================================
+# CLOUD DELIVERY (CD)
+# ==========================================
+
+cloud-login: ## Log Docker into Azure Container Registry
+	@echo "🔑 Logging into Azure..."
+	az acr login --name $(ACR_NAME)
+
+cloud-build: ## Build Docker images for Cloud (amd64/linux)
+	@echo "📦 Building Ingestion Service..."
+	# We use Buildx to ensure compatibility with Cloud (Linux/AMD64)
+	docker build --platform linux/amd64 -t $(TAG_INGEST) ./src/ingestion
+	
+	@echo "📦 Building Spark Processing Engine..."
+	docker build --platform linux/amd64 -t $(TAG_SPARK) ./infra/spark
+
+cloud-push: cloud-build ## Push images to Azure Container Registry
+	@echo "🚀 Pushing Ingestion Service..."
+	docker push $(TAG_INGEST)
+	
+	@echo "🚀 Pushing Spark Engine..."
+	docker push $(TAG_SPARK)
+	
+	@echo "✅ Images deployed to $(ACR_LOGIN_SERVER)"
+
+
 # ==============================================================================
 # TESTING & QUALITY ASSURANCE
 # ==============================================================================

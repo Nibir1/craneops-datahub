@@ -1,0 +1,41 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: acrcraneopsaf7sok
+  ACR_LOGIN_SERVER: acrcraneopsaf7sok.azurecr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: ACR Login
+      run: az acr login --name ${{ env.ACR_NAME }}
+
+    # --- Build & Push Ingestion ---
+    - name: Build Ingestion Service
+      run: |
+        docker build ./src/ingestion -t ${{ env.ACR_LOGIN_SERVER }}/craneops-ingestion:${{ github.sha }}
+        docker push ${{ env.ACR_LOGIN_SERVER }}/craneops-ingestion:${{ github.sha }}
+        # Tag latest for convenience
+        docker tag ${{ env.ACR_LOGIN_SERVER }}/craneops-ingestion:${{ github.sha }} ${{ env.ACR_LOGIN_SERVER }}/craneops-ingestion:latest
+        docker push ${{ env.ACR_LOGIN_SERVER }}/craneops-ingestion:latest
+
+    # --- Build & Push Spark ---
+    - name: Build Spark Engine
+      run: |
+        docker build ./infra/spark -t ${{ env.ACR_LOGIN_SERVER }}/craneops-spark:${{ github.sha }}
+        docker push ${{ env.ACR_LOGIN_SERVER }}/craneops-spark:${{ github.sha }}
+        docker tag ${{ env.ACR_LOGIN_SERVER }}/craneops-spark:${{ github.sha }} ${{ env.ACR_LOGIN_SERVER }}/craneops-spark:latest
+        docker push ${{ env.ACR_LOGIN_SERVER }}/craneops-spark:latest
