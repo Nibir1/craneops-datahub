@@ -151,6 +151,26 @@ sql-count: ## Count records in DailyStats
 	@echo "📊 Counting records..."
 	docker exec craneops-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '$(MSSQL_SA_PASSWORD)' -d CraneData -C -Q "SELECT COUNT(*) as TotalRecords FROM DailyStats;"
 
+
+# ==========================================
+# CLOUD INFRASTRUCTURE (Terraform)
+# ==========================================
+
+infra-init: ## Initialize Terraform
+	cd infra/terraform && terraform init
+
+infra-plan: ## Plan Terraform deployment
+	cd infra/terraform && terraform plan -var="sql_admin_password=$(MSSQL_SA_PASSWORD)"
+
+infra-apply: ## Apply Terraform (Provision Azure Resources)
+	cd infra/terraform && terraform apply -auto-approve -var="sql_admin_password=$(MSSQL_SA_PASSWORD)"
+	@echo "✅ Azure Infrastructure Provisioned!"
+
+infra-destroy: ## Destroy Azure Resources (Save Money)
+	cd infra/terraform && terraform destroy -auto-approve -var="sql_admin_password=$(MSSQL_SA_PASSWORD)"
+	@echo "🔥 Azure Infrastructure Destroyed."
+
+
 # ==============================================================================
 # TESTING & QUALITY ASSURANCE
 # ==============================================================================
