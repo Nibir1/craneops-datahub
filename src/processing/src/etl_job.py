@@ -1,11 +1,14 @@
 import sys
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, avg, max, count, current_timestamp
+from pyspark.sql.functions import col, to_date, avg, max, count, current_timestamp, sum as spark_sum, when
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 
+# JDBC Configuration for SQL Server
+JDBC_URL = "jdbc:sqlserver://sqlserver:1433;databaseName=CraneData;encrypt=true;trustServerCertificate=true;"
+
 def create_spark_session():
-    """Initialize Spark session."""
+    """Initialize Spark session with Azure and MSSQL support."""
     return SparkSession.builder \
         .appName("CraneOps_ETL") \
         .getOrCreate()
@@ -81,13 +84,19 @@ def run_etl():
         print("AGGREGATING TO GOLD LAYER")
         print("=" * 60)
         
+        # Aggregate with column names matching SQL schema (CamelCase)
+        # FIXED: Use when() to count overheat events properly
         df_gold = df_silver.groupBy("report_date", "crane_id") \
             .agg(
-                count("lift_weight_kg").alias("total_lifts"),
-                avg("lift_weight_kg").alias("avg_lift_weight_kg"),
-                max("motor_temp_c").alias("max_motor_temp_c")
+                count("lift_weight_kg").alias("TotalLifts"),
+                avg("lift_weight_kg").alias("AvgLiftWeightKg"),
+                max("motor_temp_c").alias("MaxMotorTempC"),
+                # FIXED: Use when() to create 1/0 values, then sum
+                spark_sum(when(col("motor_temp_c") > 100, 1).otherwise(0)).alias("OverheatEvents")
             ) \
-            .withColumn("last_updated", current_timestamp())
+            .withColumnRenamed("report_date", "StatDate") \
+            .withColumnRenamed("crane_id", "CraneID") \
+            .withColumn("LastUpdated", current_timestamp())
 
         gold_count = df_gold.count()
         print(f"✅ Gold layer: {gold_count} aggregated records")
@@ -110,13 +119,50 @@ def run_etl():
         json_output = "/data/telemetry-gold/daily_stats_json"
         df_gold.write.mode("overwrite").json(json_output)
         
-        print(f"\n✅ ETL JOB COMPLETE SUCCESSFULLY!")
+        print(f"\n✅ Data Lake Write Complete:")
+        print(f"   - Parquet: {output_path}")
+        print(f"   - JSON:    {json_output}")
+        
+        # 5. SERVING (SQL Server)
+        print("\n" + "=" * 60)
+        print("PUBLISHING TO SQL SERVER (Serving Layer)")
+        print("=" * 60)
+        
+        # Get password from environment (Safety First)
+        db_password = os.environ.get("MSSQL_SA_PASSWORD")
+        if not db_password:
+            print("⚠️  MSSQL_SA_PASSWORD not set. Skipping SQL write.")
+        else:
+            try:
+                print(f"🔌 Connecting to: {JDBC_URL}")
+                
+                # Write Mode: Overwrite
+                # In production, consider 'append' with pre-delete logic for idempotency
+                df_gold.write \
+                    .format("jdbc") \
+                    .option("url", JDBC_URL) \
+                    .option("dbtable", "dbo.DailyStats") \
+                    .option("user", "sa") \
+                    .option("password", db_password) \
+                    .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver") \
+                    .mode("overwrite") \
+                    .save()
+                    
+                print("✅ Successfully wrote data to SQL Server table 'dbo.DailyStats'")
+                
+            except Exception as e:
+                print(f"❌ Failed to write to SQL Server: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                # Don't fail the whole job if SQL is down, just log it
+
+        print(f"\n" + "=" * 60)
+        print(f"✅ ETL JOB COMPLETE SUCCESSFULLY!")
+        print(f"=" * 60)
         print(f"   - Bronze: {bronze_count} raw records")
         print(f"   - Silver: {silver_count} cleaned records")  
         print(f"   - Gold:   {gold_count} aggregated records")
-        print(f"\n📊 Output locations:")
-        print(f"   - Parquet: {output_path}")
-        print(f"   - JSON:    {json_output}")
+        print(f"   - SQL:    Published to dbo.DailyStats")
         
     except Exception as e:
         print(f"\n❌ ETL JOB FAILED: {str(e)}")

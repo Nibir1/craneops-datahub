@@ -1,8 +1,8 @@
 # ==========================================
 # CRANEOPS SPARK - PRODUCTION IMAGE
 # ==========================================
-# Extends official Spark with Azure Storage JARs and Python
-# Tag: craneops/spark-azure:3.5.7-v1
+# Extends official Spark with Azure Storage JARs, MSSQL JDBC Driver, and Python
+# Tag: craneops/spark-azure:3.5.7-v2
 
 FROM spark:3.5.7-scala2.12-java11-ubuntu
 
@@ -27,10 +27,11 @@ RUN pip3 install --no-cache-dir \
 RUN mkdir -p /opt/spark/jars/azure /opt/spark/work-dir /tmp/.ivy2 /data && \
     chown -R spark:spark /opt/spark/work-dir /tmp/.ivy2 /data
 
-# Download Azure/Hadoop dependencies
+# Download Azure/Hadoop dependencies AND MSSQL JDBC Driver
 RUN set -eux; \
     cd /opt/spark/jars/azure; \
     \
+    # --- AZURE STORAGE JARS ---
     curl -fsSL -o hadoop-azure-3.3.4.jar \
     "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-azure/3.3.4/hadoop-azure-3.3.4.jar"; \
     \
@@ -64,6 +65,11 @@ RUN set -eux; \
     curl -fsSL -o jetty-client-9.4.53.v20231009.jar \
     "https://repo1.maven.org/maven2/org/eclipse/jetty/jetty-client/9.4.53.v20231009/jetty-client-9.4.53.v20231009.jar"; \
     \
+    # --- MSSQL JDBC DRIVER ---
+    curl -fsSL -o mssql-jdbc-12.6.1.jre11.jar \
+    "https://repo1.maven.org/maven2/com/microsoft/sqlserver/mssql-jdbc/12.6.1.jre11/mssql-jdbc-12.6.1.jre11.jar"; \
+    \
+    # Verify all JARs are valid
     for jar in *.jar; do \
     echo "Verifying: $jar"; \
     jar tf "$jar" > /dev/null 2>&1 || { echo "Invalid JAR: $jar"; exit 1; }; \
@@ -85,5 +91,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
 LABEL maintainer="craneops-team" \
-    version="3.5.7-v1" \
-    description="Spark 3.5.7 with Azure Blob Storage and Python for CraneOps"
+    version="3.5.7-v2" \
+    description="Spark 3.5.7 with Azure Blob Storage, MSSQL JDBC, and Python for CraneOps"
