@@ -2,13 +2,13 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 3.90.0"
+      # Bump to a newer version in the 3.x series
+      version = ">= 3.100.0" 
     }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6.0"
     }
-    # ADD THIS PROVIDER
     time = {
       source  = "hashicorp/time"
       version = "~> 0.10.0"

@@ -2,7 +2,6 @@ package com.craneops.ingestion;
 
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.BlobServiceClient;
 import com.craneops.ingestion.dto.TelemetryEvent;
 import com.craneops.ingestion.service.IngestionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.test.util.ReflectionTestUtils; // Required for Field Injection
 
 import java.io.InputStream;
 import java.time.Instant;
@@ -27,9 +27,8 @@ import static org.mockito.Mockito.*;
 
 class IngestionServiceTest {
 
-    @Mock
-    private BlobServiceClient blobServiceClient;
-
+    // We no longer need BlobServiceClient mock because we inject the
+    // ContainerClient directly
     @Mock
     private BlobContainerClient containerClient;
 
@@ -48,19 +47,19 @@ class IngestionServiceTest {
         objectMapper.registerModule(new JavaTimeModule());
         objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-        // 2. Setup Azure SDK Mocks
-        // When service asks for a container, give the mock container
-        when(blobServiceClient.getBlobContainerClient(anyString())).thenReturn(containerClient);
+        // 2. Initialize Service using the REAL constructor (only takes ObjectMapper
+        // now)
+        ingestionService = new IngestionService(objectMapper);
 
-        // When service checks if container exists, say YES (to skip create() call)
-        when(containerClient.exists()).thenReturn(true);
-
+        // 3. Setup Azure SDK Mocks
         // When service asks for a blob client (file), give the mock blob client
         when(containerClient.getBlobClient(anyString())).thenReturn(blobClient);
 
-        // 3. Initialize Service using the TEST CONSTRUCTOR
-        // This bypasses the Managed Identity/Connection String logic entirely
-        ingestionService = new IngestionService(blobServiceClient, "telemetry-raw", objectMapper);
+        // 4. FORCE INJECT THE MOCK (The Magic Fix)
+        // Since we removed the test constructor, we use ReflectionTestUtils
+        // to set the private 'containerClient' field directly.
+        // This bypasses the init() method and complex connection logic.
+        ReflectionTestUtils.setField(ingestionService, "containerClient", containerClient);
     }
 
     @Test
@@ -73,6 +72,7 @@ class IngestionServiceTest {
                 Instant.parse("2024-01-01T12:00:00Z"));
 
         // Act & Assert
+        // This will succeed because 'containerClient' is populated via Reflection above
         assertDoesNotThrow(() -> ingestionService.processEvent(event));
 
         // Verify that upload was called on the mock blob client

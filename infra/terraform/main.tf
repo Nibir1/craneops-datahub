@@ -11,13 +11,13 @@ resource "random_string" "suffix" {
   upper   = false
 }
 
-# 3. Azure Container Registry (ACR) - Basic SKU (Cheapest)
+# 3. Azure Container Registry (ACR) - Basic SKU
 resource "azurerm_container_registry" "acr" {
   name                = "acr${var.project_name}${random_string.suffix.result}"
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   sku                 = "Basic"
-  admin_enabled       = true # Simplified auth for Phase 8
+  admin_enabled       = true
 }
 
 # 4. Azure Data Lake Storage Gen2 (ADLS)
@@ -26,21 +26,21 @@ resource "azurerm_storage_account" "adls" {
   resource_group_name      = azurerm_resource_group.rg.name
   location                 = azurerm_resource_group.rg.location
   account_tier             = "Standard"
-  account_replication_type = "LRS" # Cheapest redundancy
+  account_replication_type = "LRS"
   account_kind             = "StorageV2"
-  is_hns_enabled           = true  # Enables Hierarchical Namespace (Data Lake)
+  is_hns_enabled           = true  # Enables Data Lake Gen2
 }
 
 # Create Containers
 resource "azurerm_storage_container" "bronze" {
   name                  = "telemetry-raw"
-  storage_account_name  = azurerm_storage_account.adls.name
+  storage_account_id    = azurerm_storage_account.adls.id
   container_access_type = "private"
 }
 
 resource "azurerm_storage_container" "gold" {
   name                  = "telemetry-gold"
-  storage_account_name  = azurerm_storage_account.adls.name
+  storage_account_id    = azurerm_storage_account.adls.id
   container_access_type = "private"
 }
 
@@ -59,13 +59,12 @@ resource "azurerm_mssql_database" "sqldb" {
   server_id = azurerm_mssql_server.sqlserver.id
   collation = "SQL_Latin1_General_CP1_CI_AS"
   
-  # Serverless Config: Auto-pause after 1 hour (60 mins) to save money
   sku_name                    = "GP_S_Gen5_1" 
   min_capacity                = 0.5
   auto_pause_delay_in_minutes = 60
 }
 
-# Allow Azure Services (Container Apps) to access SQL
+# Allow Azure Services to access SQL
 resource "azurerm_mssql_firewall_rule" "allow_azure_services" {
   name             = "AllowAzureServices"
   server_id        = azurerm_mssql_server.sqlserver.id
@@ -73,7 +72,7 @@ resource "azurerm_mssql_firewall_rule" "allow_azure_services" {
   end_ip_address   = "0.0.0.0"
 }
 
-# Allow YOUR IP (Local Machine) to query SQL
+# Allow Local IP
 data "http" "myip" {
   url = "http://ipv4.icanhazip.com"
 }
@@ -122,7 +121,6 @@ resource "azurerm_role_assignment" "acr_pull" {
   principal_id         = azurerm_user_assigned_identity.ingest_identity.principal_id
 }
 
-# --- NEW: PROPAGATION DELAY ---
 # Forces Terraform to wait 60s for RBAC to replicate
 resource "time_sleep" "wait_for_rbac" {
   create_duration = "60s"
@@ -133,7 +131,7 @@ resource "time_sleep" "wait_for_rbac" {
 }
 
 # ==========================================
-# 8. Azure Container App (Ingestion Service)
+# 8. Production Ingestion Service (Always-On)
 # ==========================================
 resource "azurerm_container_app" "ingestion" {
   name                         = "ca-${var.project_name}-ingest"
@@ -141,7 +139,6 @@ resource "azurerm_container_app" "ingestion" {
   resource_group_name          = azurerm_resource_group.rg.name
   revision_mode                = "Single"
 
-  # Explicitly depend on the timer, not just the role
   depends_on = [time_sleep.wait_for_rbac]
 
   identity {
@@ -155,33 +152,140 @@ resource "azurerm_container_app" "ingestion" {
   }
 
   template {
+    # --- PRODUCTION SCALING (No Cold Start) ---
+    min_replicas = 1
+    max_replicas = 10
+
     container {
       name   = "ingestion-service"
-      image  = "${azurerm_container_registry.acr.login_server}/craneops-ingestion:latest"
+      image  = "${azurerm_container_registry.acr.login_server}/craneops-ingestion:v2"
       cpu    = 0.5
-      memory = "1Gi"
+      memory = "1.0Gi"
+
+      # --- 🚨 ADD THIS NEW VARIABLE 🚨 ---
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.ingest_identity.client_id
+      }
+      # -----------------------------------
 
       env {
-        name  = "AZURE_STORAGE_ACCOUNT_NAME"
+        name  = "AZURE_STORAGE_ACCOUNT"
         value = azurerm_storage_account.adls.name
       }
       env {
-        name  = "AZURE_IDENTITY_ENABLED"
-        value = "true" 
+        name  = "AZURE_CONTAINER_NAME"
+        value = "telemetry-raw"
       }
       env {
         name  = "SERVER_PORT"
-        value = "8082"
+        value = "8080" 
       }
     }
   }
 
   ingress {
     external_enabled = true 
-    target_port      = 8082
+    target_port      = 8080
     traffic_weight {
       percentage      = 100
       latest_revision = true
     }
   }
+}
+
+# ==========================================
+# 9. Serverless Spark Job (ETL Engine)
+# ==========================================
+resource "azurerm_container_app_job" "spark_etl" {
+  name                         = "job-${var.project_name}-etl"
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.rg.name
+  location                     = azurerm_resource_group.rg.location
+  
+  replica_timeout_in_seconds = 1800 
+  replica_retry_limit        = 0    
+
+  manual_trigger_config {
+    parallelism            = 1
+    replica_completion_count = 1
+  }
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.ingest_identity.id]
+  }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = azurerm_user_assigned_identity.ingest_identity.id
+  }
+
+  template {
+    container {
+      name   = "spark-etl"
+      image  = "${azurerm_container_registry.acr.login_server}/craneops-spark:latest"
+      cpu    = 2.0
+      memory = "4Gi"
+
+      command = [
+        "/bin/bash", 
+        "-c", 
+        "/opt/spark/bin/spark-submit --master local[*] /opt/spark/work-dir/etl_job.py"
+      ]
+
+      env {
+        name  = "AZURE_STORAGE_ACCOUNT"
+        value = azurerm_storage_account.adls.name
+      }
+      env {
+        name        = "AZURE_STORAGE_KEY"
+        secret_name = "storage-key"
+      }
+      env {
+        name  = "SQL_SERVER_HOST"
+        value = azurerm_mssql_server.sqlserver.fully_qualified_domain_name
+      }
+      env {
+        name  = "SQL_SERVER_USER"
+        value = var.sql_admin_username
+      }
+      env {
+        name        = "SQL_SERVER_PASSWORD"
+        secret_name = "sql-password"
+      }
+    }
+  }
+
+  secret {
+    name  = "storage-key"
+    value = azurerm_storage_account.adls.primary_access_key
+  }
+  secret {
+    name  = "sql-password"
+    value = var.sql_admin_password
+  }
+}
+
+# ==========================================
+# 10. Outputs for Makefile Automation
+# ==========================================
+output "acr_name" {
+  value = azurerm_container_registry.acr.name
+}
+
+output "acr_login_server" {
+  value = azurerm_container_registry.acr.login_server
+}
+
+output "storage_account_name" {
+  value = azurerm_storage_account.adls.name
+}
+
+output "sql_server_fqdn" {
+  value = azurerm_mssql_server.sqlserver.fully_qualified_domain_name
+}
+
+output "ingestion_app_url" {
+  value = azurerm_container_app.ingestion.ingress[0].fqdn
 }

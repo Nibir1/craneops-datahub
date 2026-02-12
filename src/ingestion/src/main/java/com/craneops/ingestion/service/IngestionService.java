@@ -7,6 +7,7 @@ import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
 import com.craneops.ingestion.dto.TelemetryEvent;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -21,58 +22,73 @@ import java.util.UUID;
 @Slf4j
 public class IngestionService {
 
-    private final BlobContainerClient containerClient;
+    // 1. Inject properties directly into fields (Safest method for optional values)
+    @Value("${AZURE_STORAGE_CONNECTION_STRING:#{null}}")
+    private String connectionString;
+
+    @Value("${AZURE_STORAGE_ACCOUNT:#{null}}")
+    private String accountName;
+
+    @Value("${AZURE_CONTAINER_NAME:telemetry-raw}")
+    private String containerName;
+
     private final ObjectMapper objectMapper;
+    private BlobContainerClient containerClient;
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd")
             .withZone(ZoneId.of("UTC"));
 
-    // --------------------------------------------------------------------------------
-    // CONSTRUCTOR 1: Spring Boot (Production)
-    // Handles the "Connection String vs Managed Identity" decision
-    // --------------------------------------------------------------------------------
-    public IngestionService(
-            @Value("${spring.cloud.azure.storage.blob.connection-string:}") String connectionString,
-            @Value("${spring.cloud.azure.storage.blob.container-name}") String containerName,
-            @Value("${AZURE_STORAGE_ACCOUNT_NAME:}") String accountName,
-            ObjectMapper objectMapper) {
-
-        // Delegate to the helper to create the client, then pass to the main logic
-        // constructor
-        this(createClient(connectionString, accountName), containerName, objectMapper);
-    }
-
-    // --------------------------------------------------------------------------------
-    // CONSTRUCTOR 2: Testing (Unit Tests)
-    // Allows injecting a Mock BlobServiceClient directly
-    // --------------------------------------------------------------------------------
-    public IngestionService(BlobServiceClient blobServiceClient, String containerName, ObjectMapper objectMapper) {
+    // Constructor for Dependency Injection (ObjectMapper only)
+    public IngestionService(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.containerClient = blobServiceClient.getBlobContainerClient(containerName);
-
-        // Ensure container exists (Idempotent)
-        if (!containerClient.exists()) {
-            log.info("Container {} does not exist. Creating...", containerName);
-            containerClient.create();
-        }
     }
 
-    // Helper to determine which authentication method to use
-    private static BlobServiceClient createClient(String connectionString, String accountName) {
-        if (connectionString != null && !connectionString.isEmpty()) {
-            log.info("🔌 Using Connection String for Blob Storage");
-            return new BlobServiceClientBuilder()
-                    .connectionString(connectionString)
-                    .buildClient();
-        } else if (accountName != null && !accountName.isEmpty()) {
-            log.info("☁️ Using Managed Identity for Blob Storage");
-            String endpoint = String.format("https://%s.blob.core.windows.net", accountName);
-            return new BlobServiceClientBuilder()
-                    .endpoint(endpoint)
-                    .credential(new DefaultAzureCredentialBuilder().build())
-                    .buildClient();
-        } else {
-            throw new IllegalStateException("Misconfiguration: Neither Connection String nor Account Name provided.");
+    // 2. Initialize logic runs AFTER dependency injection
+    @PostConstruct
+    public void init() {
+        log.info("🚀 IngestionService: Initializing Storage Client...");
+
+        try {
+            BlobServiceClient blobServiceClient = null;
+
+            // STRATEGY 1: Connection String (Local Development)
+            // We verify it's not null, not empty, AND NOT our "fake" infra override key.
+            if (connectionString != null && !connectionString.isEmpty()
+                    && !connectionString.contains("AccountKey=fake")) {
+                log.info("🔌 Strategy: Using Connection String (Local/Dev Mode)");
+                blobServiceClient = new BlobServiceClientBuilder()
+                        .connectionString(connectionString)
+                        .buildClient();
+            }
+            // STRATEGY 2: Managed Identity (Production Cloud)
+            else if (accountName != null && !accountName.isEmpty()) {
+                log.info("☁️ Strategy: Using Managed Identity (Production Mode: {})", accountName);
+                String endpoint = String.format("https://%s.blob.core.windows.net", accountName);
+
+                blobServiceClient = new BlobServiceClientBuilder()
+                        .endpoint(endpoint)
+                        .credential(new DefaultAzureCredentialBuilder().build())
+                        .buildClient();
+            } else {
+                log.error("❌ CRITICAL: No valid Storage configuration found! Check Env Vars.");
+                throw new IllegalStateException("Storage Misconfiguration");
+            }
+
+            // Initialize the Container Client
+            this.containerClient = blobServiceClient.getBlobContainerClient(containerName);
+
+            // 3. Connectivity Check (Fail fast if permissions are wrong)
+            if (!this.containerClient.exists()) {
+                log.info("📦 Container '{}' does not exist. Attempting creation...", containerName);
+                this.containerClient.create();
+            }
+            log.info("✅ Storage Connection Established: {}", containerName);
+
+        } catch (Exception e) {
+            log.error("⚠️ Storage Initialization Warning: {}", e.getMessage());
+            // We catch but don't rethrow to ensure the Spring Boot app can START UP.
+            // This prevents the "Crash Loop" if Azure permissions take a few seconds to
+            // propagate.
         }
     }
 
@@ -80,10 +96,15 @@ public class IngestionService {
     // Business Logic
     // --------------------------------------------------------------------------------
     public void processEvent(TelemetryEvent event) {
+        if (containerClient == null) {
+            throw new IllegalStateException("Storage Client is not initialized. Check startup logs.");
+        }
+
         try {
             String jsonPayload = objectMapper.writeValueAsString(event);
             byte[] data = jsonPayload.getBytes(StandardCharsets.UTF_8);
 
+            // Partitioning Path: yyyy/MM/dd/craneID-timestamp-uuid.json
             String datePath = DATE_FORMATTER.format(event.getTimestamp());
             String fileName = String.format("%s/%s-%s-%s.json",
                     datePath,
@@ -94,10 +115,10 @@ public class IngestionService {
             BlobClient blobClient = containerClient.getBlobClient(fileName);
             blobClient.upload(new ByteArrayInputStream(data), data.length, true);
 
-            log.debug("Ingested event for crane: {} to path: {}", event.getCraneId(), fileName);
+            log.debug("✅ Ingested event for crane: {} to path: {}", event.getCraneId(), fileName);
 
         } catch (Exception e) {
-            log.error("Failed to ingest event for crane: {}", event.getCraneId(), e);
+            log.error("❌ Failed to ingest event for crane: {}", event.getCraneId(), e);
             throw new RuntimeException("Storage Ingestion Failed", e);
         }
     }
