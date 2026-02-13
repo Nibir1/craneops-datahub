@@ -15,7 +15,7 @@ import (
 
 // Configuration Defaults
 const (
-	DefaultApiURL     = "http://localhost:8082/api/v1/telemetry" // Matches your Phase 2 fix
+	DefaultApiURL     = "http://localhost:8082/api/v1/telemetry"
 	DefaultCraneCount = 10
 	DefaultInterval   = 1000 * time.Millisecond // 1 second
 )
@@ -30,7 +30,8 @@ type TelemetryEvent struct {
 
 func main() {
 	// 1. Load Configuration
-	apiURL := getEnv("API_URL", DefaultApiURL)
+	// FIX: Changed from API_URL to INGESTION_URL to match the Makefile
+	apiURL := getEnv("INGESTION_URL", DefaultApiURL)
 	craneCount, _ := strconv.Atoi(getEnv("CRANE_COUNT", strconv.Itoa(DefaultCraneCount)))
 
 	log.Printf("🚀 Starting Telemetry Generator")
@@ -96,7 +97,7 @@ func sendTelemetry(client *http.Client, apiURL string, event TelemetryEvent) err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 

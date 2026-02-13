@@ -149,6 +149,25 @@ cloud-etl-run: ## Trigger the Spark ETL Job in Azure
 	az containerapp job start --name $(JOB_NAME) --resource-group $(RG_NAME)
 	@echo "⏳ Job started! Run 'az containerapp job execution list' to check status."
 
+# ==========================================
+# ENTERPRISE ORCHESTRATION (ADF) & LOAD TESTING
+# ==========================================
+
+gen-cloud: ## Run Go Generator against Azure Cloud App
+	@echo "🚀 Pumping telemetry to Azure Cloud..."
+	@APP_URL=$$(cd infra/terraform && terraform output -raw ingestion_app_url) && \
+	cd src/generator && INGESTION_URL="https://$$APP_URL/api/v1/telemetry" go run main.go
+
+cloud-adf-run: ## Trigger the Azure Data Factory Pipeline
+	@echo "🏭 Triggering ADF Pipeline (pl_daily_crane_etl)..."
+	@ADF_NAME=$$(cd infra/terraform && terraform output -raw adf_name 2>/dev/null) && \
+	az datafactory pipeline create-run \
+		--resource-group $(RG_NAME) \
+		--factory-name $$ADF_NAME \
+		--name pl_daily_crane_etl
+	@echo "✅ Pipeline triggered! The Spark Job will start shortly."
+
+
 # ==============================================================================
 # MAINTENANCE
 # ==============================================================================
