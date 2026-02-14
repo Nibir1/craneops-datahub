@@ -3,7 +3,8 @@ import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, to_timestamp, window, avg, max as spark_max, count, sum as spark_sum, when
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType
-from delta.tables import DeltaTable # <-- NEW: Delta Lake Import
+from delta.tables import DeltaTable
+import pyodbc
 
 def get_spark_session(app_name="CraneOps-Lakehouse-ETL"):
     """
@@ -27,6 +28,63 @@ def get_spark_session(app_name="CraneOps-Lakehouse-ETL"):
         print("Configuring Spark for Local/Azurite with Delta Lake")
     
     return builder.getOrCreate()
+
+def upsert_to_sql(df, jdbc_url, table_name, user, password):
+    """
+    Senior Engineer Fix: Idempotent SQL Server MERGE (Upsert)
+    Instead of a blind append that crashes on Primary Key violations,
+    this function writes to a temporary staging table, then executes
+    a native SQL Server MERGE statement to update existing records
+    and insert new ones safely.
+    """
+    temp_table = f"{table_name}_Staging"
+    
+    print(f"1. Writing data to staging table: {temp_table}")
+    df.write \
+        .format("jdbc") \
+        .option("url", jdbc_url) \
+        .option("dbtable", temp_table) \
+        .option("user", user) \
+        .option("password", password) \
+        .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver") \
+        .mode("overwrite") \
+        .save()
+
+    print(f"2. Executing SQL MERGE from {temp_table} into {table_name}")
+    
+    # Construct the JDBC connection string for the pyodbc execution
+    # Note: We must re-parse the JDBC URL into a standard ODBC format for the execute script
+    sql_host = jdbc_url.split("://")[1].split(":")[0]
+    conn_str = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={sql_host},1433;DATABASE=CraneData;UID={user};PWD={password};TrustServerCertificate=yes;"
+    
+    merge_query = f"""
+        MERGE {table_name} AS target
+        USING {temp_table} AS source
+        ON (target.StatDate = source.StatDate AND target.CraneID = source.CraneID)
+        WHEN MATCHED THEN 
+            UPDATE SET 
+                target.TotalLifts = source.TotalLifts,
+                target.AvgLiftWeightKg = source.AvgLiftWeightKg,
+                target.MaxMotorTempC = source.MaxMotorTempC,
+                target.OverheatEvents = source.OverheatEvents,
+                target.LastUpdated = GETDATE()
+        WHEN NOT MATCHED THEN
+            INSERT (StatDate, CraneID, TotalLifts, AvgLiftWeightKg, MaxMotorTempC, OverheatEvents)
+            VALUES (source.StatDate, source.CraneID, source.TotalLifts, source.AvgLiftWeightKg, source.MaxMotorTempC, source.OverheatEvents);
+        
+        DROP TABLE {temp_table};
+    """
+    
+    try:
+        # Use pyodbc to execute the complex MERGE statement directly against the database
+        conn = pyodbc.connect(conn_str, autocommit=True)
+        cursor = conn.cursor()
+        cursor.execute(merge_query)
+        conn.close()
+        print(f"Upsert successfully completed into {table_name}")
+    except Exception as e:
+        print(f"MERGE operation failed: {e}")
+        raise e
 
 def main():
     spark = get_spark_session()
@@ -116,7 +174,7 @@ def main():
             count("*").alias("TotalLifts"),
             avg("lift_weight_kg").alias("AvgLiftWeightKg"),
             spark_max("motor_temp_c").alias("MaxMotorTempC"),
-            spark_sum(when(col("motor_temp_c") > 100, 1).otherwise(0)).alias("OverheatEvents") # FIX: Accurate overheat count
+            spark_sum(when(col("motor_temp_c") > 100, 1).otherwise(0)).alias("OverheatEvents") 
         ) \
         .select(
             col("time_window.start").cast("date").alias("StatDate"),
@@ -141,26 +199,15 @@ def main():
     df_final_gold = spark.read.format("delta").load(GOLD_PATH)
 
     # ------------------------------------------------------------------
-    # 5. SERVE (Azure SQL)
+    # 5. SERVE (Azure SQL - Idempotent Upsert)
     # ------------------------------------------------------------------
     print(f"Writing aggregates to SQL Server: {SQL_HOST}...")
     
     try:
-        # Note: In a true 100% production environment, you would use a SQL MERGE query here 
-        # to prevent duplicate rows in SQL if the Spark job runs twice a day. 
-        # For now, we continue appending the processed Delta stream.
-        df_final_gold.write \
-            .format("jdbc") \
-            .option("url", jdbc_url) \
-            .option("dbtable", "DailyStats") \
-            .option("user", SQL_USER) \
-            .option("password", SQL_PASS) \
-            .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver") \
-            .mode("append") \
-            .save()
-        print("✅ Lakehouse ETL Job Completed Successfully!")
+        upsert_to_sql(df_final_gold, jdbc_url, "DailyStats", SQL_USER, SQL_PASS)
+        print("Lakehouse ETL Job Completed Successfully!")
     except Exception as e:
-        print(f"❌ Failed to write to SQL: {e}")
+        print(f"Failed to write to SQL: {e}")
         sys.exit(1)
 
     spark.stop()
