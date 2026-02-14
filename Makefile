@@ -169,6 +169,15 @@ sql-query-cloud: ## Query DailyStats on Azure SQL
 		-S $(CLOUD_SQL_HOST) -U $(CLOUD_SQL_USER) -P '$(CLOUD_SQL_PASS)' \
 		-d CraneData -C -Q "SELECT TOP 10 * FROM DailyStats;" -y 30 -Y 30
 
+show-sql-creds: ## Show Azure SQL credentials for Power BI
+	@echo "Azure SQL Credentials for Power BI:"
+	@echo "-------------------------------------------------"
+	@echo "Server:   $$(cd infra/terraform && terraform output -raw sql_server_fqdn)"
+	@echo "Database: CraneData"
+	@echo "Username: $(CLOUD_SQL_USER)"
+	@echo "Password: $(CLOUD_SQL_PASS)"
+	@echo "-------------------------------------------------"
+
 # ==========================================
 # CLOUD ETL (Serverless Spark)
 # ==========================================

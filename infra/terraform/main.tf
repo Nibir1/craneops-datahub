@@ -97,6 +97,14 @@ resource "azurerm_mssql_firewall_rule" "allow_local_dev" {
   end_ip_address   = chomp(data.http.myip.response_body)
 }
 
+# --- 🚨 NEW: ALLOW POWER BI WEB ACCESS 🚨 ---
+resource "azurerm_mssql_firewall_rule" "allow_powerbi" {
+  name             = "AllowPowerBI"
+  server_id        = azurerm_mssql_server.sqlserver.id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
+}
+
 # 6. Container Apps Environment
 resource "azurerm_log_analytics_workspace" "log" {
   name                = "log-${var.project_name}"
