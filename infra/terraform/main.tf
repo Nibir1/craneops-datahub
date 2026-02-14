@@ -11,6 +11,11 @@ resource "random_string" "suffix" {
   upper   = false
 }
 
+# --- 🚨 MOVED: Local IP Lookup (Needed for Zero Trust) 🚨 ---
+data "http" "myip" {
+  url = "http://ipv4.icanhazip.com"
+}
+
 # 3. Azure Container Registry (ACR) - Basic SKU
 resource "azurerm_container_registry" "acr" {
   name                = "acr${var.project_name}${random_string.suffix.result}"
@@ -29,6 +34,13 @@ resource "azurerm_storage_account" "adls" {
   account_replication_type = "LRS"
   account_kind             = "StorageV2"
   is_hns_enabled           = true  # Enables Data Lake Gen2
+
+  # --- 🚨 NEW: ZERO TRUST FIREWALL 🚨 ---
+  network_rules {
+    default_action             = "Deny"
+    ip_rules                   = [chomp(data.http.myip.response_body)] # Allow your Macbook
+    virtual_network_subnet_ids = [azurerm_subnet.aca_subnet.id]        # Allow the Container Apps
+  }
 }
 
 # Create Containers (The Medallion Architecture)
@@ -38,7 +50,6 @@ resource "azurerm_storage_container" "bronze" {
   container_access_type = "private"
 }
 
-# --- 🚨 NEW: SILVER LAYER FOR DELTA LAKE 🚨 ---
 resource "azurerm_storage_container" "silver" {
   name                  = "telemetry-silver"
   storage_account_id    = azurerm_storage_account.adls.id
@@ -71,19 +82,14 @@ resource "azurerm_mssql_database" "sqldb" {
   auto_pause_delay_in_minutes = 60
 }
 
-# Allow Azure Services to access SQL
-resource "azurerm_mssql_firewall_rule" "allow_azure_services" {
-  name             = "AllowAzureServices"
-  server_id        = azurerm_mssql_server.sqlserver.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
+# --- 🚨 NEW: VNET RULE FOR SQL 🚨 ---
+resource "azurerm_mssql_virtual_network_rule" "sql_vnet_rule" {
+  name      = "sql-vnet-rule"
+  server_id = azurerm_mssql_server.sqlserver.id
+  subnet_id = azurerm_subnet.aca_subnet.id
 }
 
-# Allow Local IP
-data "http" "myip" {
-  url = "http://ipv4.icanhazip.com"
-}
-
+# Allow Local IP (So your Macbook can still run queries)
 resource "azurerm_mssql_firewall_rule" "allow_local_dev" {
   name             = "AllowLocalDev"
   server_id        = azurerm_mssql_server.sqlserver.id
@@ -105,6 +111,9 @@ resource "azurerm_container_app_environment" "env" {
   location                   = azurerm_resource_group.rg.location
   resource_group_name        = azurerm_resource_group.rg.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.log.id
+
+  # --- 🚨 NEW: VNET INJECTION 🚨 ---
+  infrastructure_subnet_id   = azurerm_subnet.aca_subnet.id
 }
 
 # ==========================================
