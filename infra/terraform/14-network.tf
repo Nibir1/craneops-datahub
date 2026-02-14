@@ -16,11 +16,11 @@ resource "azurerm_subnet" "aca_subnet" {
   name                 = "snet-aca-compute"
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = ["10.0.0.0/23"] 
+  address_prefixes     = ["10.0.0.0/23"]
 
   # Service Endpoints create a secure, direct route to Storage and SQL
   # bypassing the public internet entirely.
-  service_endpoints    = ["Microsoft.Storage", "Microsoft.Sql"]
+  service_endpoints = ["Microsoft.Storage", "Microsoft.Sql"]
 
   # Delegate this subnet to Container Apps
   delegation {

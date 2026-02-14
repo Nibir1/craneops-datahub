@@ -1,9 +1,9 @@
 terraform {
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
+      source = "hashicorp/azurerm"
       # Bump to a newer version in the 3.x series
-      version = ">= 3.100.0" 
+      version = ">= 3.100.0"
     }
     random = {
       source  = "hashicorp/random"
@@ -20,7 +20,7 @@ terraform {
   # allowing GitHub Actions and your Macbook to share the same state.
   backend "azurerm" {
     resource_group_name  = "rg-craneops-tfstate"
-    storage_account_name = "stcraneopstfstate7788" 
+    storage_account_name = "stcraneopstfstate7788"
     container_name       = "tfstate"
     key                  = "prod.terraform.tfstate"
   }

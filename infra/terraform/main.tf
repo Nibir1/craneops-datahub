@@ -33,7 +33,7 @@ resource "azurerm_storage_account" "adls" {
   account_tier             = "Standard"
   account_replication_type = "LRS"
   account_kind             = "StorageV2"
-  is_hns_enabled           = true  # Enables Data Lake Gen2
+  is_hns_enabled           = true # Enables Data Lake Gen2
 
   # --- 🚨 NEW: ZERO TRUST FIREWALL 🚨 ---
   network_rules {
@@ -76,8 +76,8 @@ resource "azurerm_mssql_database" "sqldb" {
   name      = "CraneData"
   server_id = azurerm_mssql_server.sqlserver.id
   collation = "SQL_Latin1_General_CP1_CI_AS"
-  
-  sku_name                    = "GP_S_Gen5_1" 
+
+  sku_name                    = "GP_S_Gen5_1"
   min_capacity                = 0.5
   auto_pause_delay_in_minutes = 60
 }
@@ -113,7 +113,7 @@ resource "azurerm_container_app_environment" "env" {
   log_analytics_workspace_id = azurerm_log_analytics_workspace.log.id
 
   # --- 🚨 NEW: VNET INJECTION 🚨 ---
-  infrastructure_subnet_id   = azurerm_subnet.aca_subnet.id
+  infrastructure_subnet_id = azurerm_subnet.aca_subnet.id
 }
 
 # ==========================================
@@ -192,13 +192,13 @@ resource "azurerm_container_app" "ingestion" {
       }
       env {
         name  = "SERVER_PORT"
-        value = "8080" 
+        value = "8080"
       }
     }
   }
 
   ingress {
-    external_enabled = true 
+    external_enabled = true
     target_port      = 8080
     traffic_weight {
       percentage      = 100
@@ -215,9 +215,9 @@ resource "azurerm_container_app_job" "spark_etl" {
   container_app_environment_id = azurerm_container_app_environment.env.id
   resource_group_name          = azurerm_resource_group.rg.name
   location                     = azurerm_resource_group.rg.location
-  
-  replica_timeout_in_seconds = 1800 
-  replica_retry_limit        = 0    
+
+  replica_timeout_in_seconds = 1800
+  replica_retry_limit        = 0
 
   manual_trigger_config {
     parallelism              = 1
@@ -242,8 +242,8 @@ resource "azurerm_container_app_job" "spark_etl" {
       memory = "4Gi"
 
       command = [
-        "/bin/bash", 
-        "-c", 
+        "/bin/bash",
+        "-c",
         "/opt/spark/bin/spark-submit --master local[*] /opt/spark/work-dir/etl_job.py"
       ]
 
