@@ -1,0 +1,68 @@
+name: CraneOps Enterprise CI/CD
+
+# ---------------------------------------------------------
+# NOTE FOR REVIEWERS / INTERVIEWERS:
+# This pipeline is fully codified for continuous deployment.
+# However, it is set to 'workflow_dispatch' (manual trigger) 
+# instead of 'push' because this project is hosted on an Azure 
+# Student Tenant where Entra ID IAM policies restrict the 
+# creation of the required Service Principal. 
+#
+# Local orchestration is handled via the Makefile.
+# ---------------------------------------------------------
+on:
+  workflow_dispatch:
+
+env:
+  TF_WORKING_DIR: './infra/terraform'
+
+jobs:
+  infrastructure-and-platform:
+    name: 'Deploy Infrastructure & Containers'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.7.0"
+
+    - name: Terraform Init
+      working-directory: ${{ env.TF_WORKING_DIR }}
+      run: terraform init
+
+    - name: Terraform Format & Validate
+      working-directory: ${{ env.TF_WORKING_DIR }}
+      run: |
+        terraform fmt -check
+        terraform validate
+
+    - name: Terraform Plan
+      working-directory: ${{ env.TF_WORKING_DIR }}
+      run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -no-color
+
+    - name: Terraform Apply
+      working-directory: ${{ env.TF_WORKING_DIR }}
+      run: terraform apply -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -auto-approve
+
+    - name: Build & Push Docker Images
+      run: |
+        ACR_NAME=$(az acr list --query "[0].name" -o tsv)
+        ACR_SERVER=$(az acr list --query "[0].loginServer" -o tsv)
+        
+        az acr login --name $ACR_NAME
+        
+        docker build -t $ACR_SERVER/craneops-ingestion:v2 ./src/ingestion
+        docker push $ACR_SERVER/craneops-ingestion:v2
+        
+        cp ./src/processing/src/etl_job.py ./infra/spark/
+        docker build -t $ACR_SERVER/craneops-spark:latest ./infra/spark
+        docker push $ACR_SERVER/craneops-spark:latest
