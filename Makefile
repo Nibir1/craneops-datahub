@@ -89,6 +89,17 @@ spark-build: ## Build production Spark image
 infra-init: ## Initialize Terraform
 	cd infra/terraform && terraform init
 
+cloud-login: ## 🔑 Authenticate to Azure and lock Subscription ID
+	@echo "🔑 Opening browser to log into Azure..."
+	az login
+	@echo "📝 Fetching active Subscription ID..."
+	@SUB_ID=$$(az account show --query id -o tsv) && \
+	echo "🎯 Found Subscription: $$SUB_ID" && \
+	grep -v '^ARM_SUBSCRIPTION_ID=' .env > .env.tmp 2>/dev/null || touch .env.tmp && \
+	echo "ARM_SUBSCRIPTION_ID=$$SUB_ID" >> .env.tmp && \
+	mv .env.tmp .env
+	@echo "✅ Azure Subscription locked into .env file. You are ready to deploy!"
+
 infra-apply: ## 🚀 100% Automated Production Bootstrap (Phased)
 	@echo "🏗️  PHASE 1: Provisioning Registry & Storage..."
 	cd infra/terraform && terraform apply -target=azurerm_container_registry.acr -target=azurerm_storage_account.adls -auto-approve -var="sql_admin_password=$(MSSQL_SA_PASSWORD)"

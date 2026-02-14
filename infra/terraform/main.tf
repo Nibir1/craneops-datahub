@@ -31,9 +31,16 @@ resource "azurerm_storage_account" "adls" {
   is_hns_enabled           = true  # Enables Data Lake Gen2
 }
 
-# Create Containers
+# Create Containers (The Medallion Architecture)
 resource "azurerm_storage_container" "bronze" {
   name                  = "telemetry-raw"
+  storage_account_id    = azurerm_storage_account.adls.id
+  container_access_type = "private"
+}
+
+# --- 🚨 NEW: SILVER LAYER FOR DELTA LAKE 🚨 ---
+resource "azurerm_storage_container" "silver" {
+  name                  = "telemetry-silver"
   storage_account_id    = azurerm_storage_account.adls.id
   container_access_type = "private"
 }
@@ -162,13 +169,10 @@ resource "azurerm_container_app" "ingestion" {
       cpu    = 0.5
       memory = "1.0Gi"
 
-      # --- 🚨 ADD THIS NEW VARIABLE 🚨 ---
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.ingest_identity.client_id
       }
-      # -----------------------------------
-
       env {
         name  = "AZURE_STORAGE_ACCOUNT"
         value = azurerm_storage_account.adls.name
@@ -207,7 +211,7 @@ resource "azurerm_container_app_job" "spark_etl" {
   replica_retry_limit        = 0    
 
   manual_trigger_config {
-    parallelism            = 1
+    parallelism              = 1
     replica_completion_count = 1
   }
 
