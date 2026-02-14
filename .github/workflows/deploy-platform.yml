@@ -2,67 +2,87 @@ name: CraneOps Enterprise CI/CD
 
 # ---------------------------------------------------------
 # NOTE FOR REVIEWERS / INTERVIEWERS:
-# This pipeline is fully codified for continuous deployment.
-# However, it is set to 'workflow_dispatch' (manual trigger) 
-# instead of 'push' because this project is hosted on an Azure 
-# Student Tenant where Entra ID IAM policies restrict the 
-# creation of the required Service Principal. 
+# Due to Azure Student Tenant IAM policies, Service Principal
+# creation is restricted. Therefore, this pipeline performs
+# Continuous Integration (CI) validation automatically on push.
 #
-# Local orchestration is handled via the Makefile.
+# The Continuous Deployment (CD) steps (Azure Login, TF Apply,
+# ACR Push) are provided as an architecture reference below,
+# while actual orchestration is executed locally via Makefile.
 # ---------------------------------------------------------
+
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 env:
   TF_WORKING_DIR: './infra/terraform'
 
 jobs:
-  infrastructure-and-platform:
-    name: 'Deploy Infrastructure & Containers'
+  ci-validation:
+    name: 'CI: Validate Infrastructure'
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Azure Login
-      uses: azure/login@v2
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
-
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: "1.7.0"
 
-    - name: Terraform Init
+    # Initialize without remote backend to bypass Azure Auth restrictions
+    - name: Terraform Init (Local / CI Mode)
       working-directory: ${{ env.TF_WORKING_DIR }}
-      run: terraform init
+      run: terraform init -backend=false
 
-    - name: Terraform Format & Validate
+    - name: Terraform Format Check
       working-directory: ${{ env.TF_WORKING_DIR }}
-      run: |
-        terraform fmt -check
-        terraform validate
+      run: terraform fmt -check
 
-    - name: Terraform Plan
+    - name: Terraform Validate
       working-directory: ${{ env.TF_WORKING_DIR }}
-      run: terraform plan -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -no-color
+      run: terraform validate
 
-    - name: Terraform Apply
-      working-directory: ${{ env.TF_WORKING_DIR }}
-      run: terraform apply -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -auto-approve
+    - name: CI Success
+      run: echo "✅ Infrastructure code is syntactically valid and ready for deployment!"
 
-    - name: Build & Push Docker Images
-      run: |
-        ACR_NAME=$(az acr list --query "[0].name" -o tsv)
-        ACR_SERVER=$(az acr list --query "[0].loginServer" -o tsv)
-        
-        az acr login --name $ACR_NAME
-        
-        docker build -t $ACR_SERVER/craneops-ingestion:v2 ./src/ingestion
-        docker push $ACR_SERVER/craneops-ingestion:v2
-        
-        cp ./src/processing/src/etl_job.py ./infra/spark/
-        docker build -t $ACR_SERVER/craneops-spark:latest ./infra/spark
-        docker push $ACR_SERVER/craneops-spark:latest
+  # =========================================================
+  # ENTERPRISE CD REFERENCE (Commented out for Student Tenant)
+  # =========================================================
+  # cd-deployment:
+  #   name: 'CD: Deploy Infrastructure & Containers'
+  #   needs: ci-validation
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #
+  #   steps:
+  #   - name: Checkout Code
+  #     uses: actions/checkout@v4
+  #
+  #   - name: Azure Login
+  #     uses: azure/login@v2
+  #     with:
+  #       creds: ${{ secrets.AZURE_CREDENTIALS }}
+  #
+  #   - name: Terraform Apply
+  #     working-directory: ${{ env.TF_WORKING_DIR }}
+  #     run: terraform apply -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" -auto-approve
+  #
+  #   - name: Build & Push Docker Images
+  #     run: |
+  #       ACR_NAME=$(az acr list --query "[0].name" -o tsv)
+  #       ACR_SERVER=$(az acr list --query "[0].loginServer" -o tsv)
+  #       az acr login --name $ACR_NAME
+  #       
+  #       docker build -t $ACR_SERVER/craneops-ingestion:v2 ./src/ingestion
+  #       docker push $ACR_SERVER/craneops-ingestion:v2
+  #       
+  #       cp ./src/processing/src/etl_job.py ./infra/spark/
+  #       docker build -t $ACR_SERVER/craneops-spark:latest ./infra/spark
+  #       docker push $ACR_SERVER/craneops-spark:latest
